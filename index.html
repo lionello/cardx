@@ -241,7 +241,7 @@
         qrcode.innerHTML = "";
         const link = location.href;
         const qr = new QRCode(qrcode, {
-          text: vcard, //link,//qrLink(link),
+          text: link,//qrLink(link),
           correctLevel: QRCode.CorrectLevel.L,
         });
         // FIXME: update REV/timestamp in vcard
