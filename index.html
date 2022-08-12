@@ -139,8 +139,8 @@
         const vcfRE = /^(\w+)(;.+?)?:(.+(\r?\n .+)*)$/gm;
         const paramsRE = /;(\w+)(?:=([^;]+))?/g;
         while ((match = vcfRE.exec(vcard)) !== null) {
-          const [, _key, paramstr, _value] = match;
-          const params = { _key, _value };
+          const [_raw, _key, paramstr, _value] = match;
+          const params = { _raw, _key, _value };
           while ((match = paramsRE.exec(paramstr)) !== null) {
             const [, key, value] = match;
             params[key] = value;
@@ -149,7 +149,11 @@
         }
         return fields;
       }
+      function timestamp() {
+        return new Date().toISOString().replace(/-|:|\.\d+/g, "");
+      }
       function showCard(vcard) {
+        let miniCard = "BEGIN:VCARD\nVERSION:3.0\n";
         const fields = parseCard(vcard);
         for (const field of fields) {
           const key = field._key;
@@ -161,9 +165,12 @@
           if (!value || !element) {
             continue;
           }
+          element.classList.remove("hide");
           switch (key) {
             case "URL":
-              element.href = value;
+              element.href = value.startsWith("http")
+                ? value
+                : "https://" + value;
               element.innerHTML += value.replace(/^https?:\/\/?/, "");
               break;
             case "TEL":
@@ -180,15 +187,19 @@
                 value.startsWith("data:") || value.startsWith("http")
                   ? value
                   : "data:image/jpeg;base64," + value;
-              break;
+              // FIXME: downscale to THUMB_SIZE; skip for now
+              continue;
             default:
               element.innerText = value;
           }
-          element.classList.remove("hide");
+          miniCard += `${field._raw}\n`;
         }
+        // FIXME: add UID, if it's not already there
+        return `${miniCard}REV:${timestamp()}\nEND:VCARD`;
       }
       function updateMyCard(vcard) {
         localStorage.setItem("vcard", vcard);
+        window.location.hash = "";
         window.location.reload();
       }
       function onUploadChange(e) {
@@ -207,30 +218,34 @@
           handleDeviceOrientation,
           true
         );
-        const card = location.hash
-          ? decodeURIComponent(location.hash.slice(1))
-          : localStorage.getItem("vcard");
-        showCard(card);
+        const card = decodeURIComponent(location.hash.slice(1));
+        const mycard = localStorage.getItem("vcard");
+        if (card) {
+          showCard(card);
+        } else {
+          if (mycard) {
+            const mini = showCard(mycard);
+            location.hash = encodeURIComponent(mini);
+            return;
+          }
+        }
 
         const vcard = document.getElementById("vcard");
-        // FIXME: use real name for file
+        // FIXME: use full name for file
         vcard.setAttribute("download", "vcard.vcf");
-        // FIXME: replace PHOTO with thumbnail; add UID
         vcard.setAttribute(
           "href",
           "data:text/vcard;charset=utf-8," + encodeURIComponent(card)
         );
-        /*if (localStorage.getItem("uuid") === null && window.crypto) {
-                var uuid = crypto.randomUUID()
-                localStorage.setItem("uuid", uuid);
-              }*/
         const qrcode = document.getElementById("qrcode");
         qrcode.innerHTML = "";
         const link = location.href;
         const qr = new QRCode(qrcode, {
-          text: qrLink(link),
+          text: vcard, //link,//qrLink(link),
+          correctLevel: QRCode.CorrectLevel.L,
         });
-        setInterval(() => qr.makeCode(qrLink(link)), INTERVAL);
+        // FIXME: update REV/timestamp in vcard
+        //setInterval(() => qr.makeCode(qrLink(link)), INTERVAL);
       }
       window.addEventListener("DOMContentLoaded", onLoad);
     </script>
@@ -256,7 +271,11 @@
             <span id="v-ORG" class="hide">Acme Labs</span>
           </a>
         </h2>
-        <p><a id="v-TEL" href="tel:+1-604-555-9599" class="hide">+1 604-555-9599</a></p>
+        <p>
+          <a id="v-TEL" href="tel:+1-604-555-9599" class="hide">
+            +1 604-555-9599
+          </a>
+        </p>
         <p>
           <a id="v-EMAIL" href="mailto:first.last@example.com" class="hide">
             first.last@example.com
