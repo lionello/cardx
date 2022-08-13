@@ -6,7 +6,6 @@
       body {
         font-family: "Skia", sans-serif;
         color: #555;
-        padding: 0;
       }
       @media screen and (orientation: portrait) {
         body {
@@ -26,18 +25,20 @@
       }
       ul {
         list-style: none;
-        padding: 0;
+      }
+      #card {
+        min-height: 100vh;
       }
       .headshot {
         border-radius: 50%;
         object-fit: cover;
-        width: 36vmin;
-        height: 36vmin;
+        width: 18vmin;
+        height: 18vmin;
       }
       #qrcode img {
         padding: 10pt;
-        width: 48vmin;
-        height: 48vmin;
+        width: 50vmin;
+        height: 50vmin;
         margin: 0 auto;
         image-rendering: pixelated;
       }
@@ -112,7 +113,7 @@
       }
       const INTERVAL = 30000;
       const THUMB_SIZE = 64;
-      function toDataUrl(imgElement) {
+      function createThumbnail(imgElement) {
         const canvas = document.createElement("canvas");
         canvas.width = THUMB_SIZE;
         canvas.height = THUMB_SIZE;
@@ -129,50 +130,109 @@
           THUMB_SIZE / ratio,
           THUMB_SIZE
         );
-        return canvas.toDataURL("image/jpeg");
-      }
-      function qrLink(link) {
-        const timestamp = (new Date() / INTERVAL) | 0;
-        return link + "#" + timestamp;
+        return canvas.toDataURL("image/jpeg", 0.2);
       }
       function parseCard(vcard) {
-        const fields = [];
-        const vcfRE = /^(\w+)(;.+?)?:(.+(\r?\n .+)*)$/gm;
-        const paramsRE = /;(\w+)(?:=([^;]+))?/g;
+        const prefs = {};
+        const model = {};
+        const vcfRE =
+          /^(?:\w+\.)?(\w+)((?:;(?:[^";:]|".*?")*)*):(.+(\r?\n .+)*)$/gm;
+        const paramsRE = /;(\w+)(?:=((?:[^";:]*|".*?")(?:,[^";:]*|,".*?")*))?/g;
         while ((match = vcfRE.exec(vcard)) !== null) {
-          const [_raw, _key, paramstr, _value] = match;
-          const params = { _raw, _key, _value };
+          const [, name, paramstr, _value] = match;
+          // Parse the parameters (if any)
+          let pref = 0;
+          let type = "";
           while ((match = paramsRE.exec(paramstr)) !== null) {
             const [, key, value] = match;
-            params[key] = value;
+            switch (key) {
+              case "type":
+              case "TYPE":
+                if (value === "pref") {
+                  pref = 1;
+                } else {
+                  type = value;
+                }
+                break;
+              case "pref":
+              case "PREF":
+                pref = value | 0;
+                break;
+            }
           }
-          fields.push(params);
+          const oldpref = prefs[name] || -1;
+          if (oldpref > pref) continue;
+          prefs[name] = pref;
+          switch (name) {
+            case "N":
+              const nameParts = _value.split(";");
+              // Only overwrite FN if it's not already set
+              // FIXME: check locale to decide correct order
+              model.FN = model.FN || `${nameParts[1]} ${nameParts[0]}`;
+              break;
+            case "URL":
+              model[`URL${type ? "-" + type : type}`] = _value;
+              break;
+            case "EMAIL":
+            case "TITLE":
+            case "ORG":
+            case "PHOTO":
+            case "FN":
+            case "TEL":
+              model[name] = _value;
+          }
         }
-        return fields;
+        return model;
       }
       function timestamp() {
         return new Date().toISOString().replace(/-|:|\.\d+/g, "");
       }
-      function showCard(vcard) {
-        let miniCard = "BEGIN:VCARD\nVERSION:3.0\n";
-        const fields = parseCard(vcard);
-        for (const field of fields) {
-          const key = field._key;
-          const value = field._value;
-          const type = field.TYPE || "home";
-          const element =
-            document.getElementById(`v-${key}-${type}`) ||
-            document.getElementById(`v-${key}`);
+      function toVCard(model) {
+        const lines = [];
+        for (const name in model) {
+          if (model.hasOwnProperty(name)) {
+            const nameWithType = name.replace("-", ";TYPE=");
+            lines.push(`${nameWithType}:${model[name]}`);
+          }
+        }
+        // FIXME: add UID, if it's not already there
+        // Sort the lines to make sure the order is consistent between runs
+        return [
+          "BEGIN:VCARD",
+          "VERSION:3.0",
+          `REV:${timestamp()}`,
+          ...lines.sort(),
+          "END:VCARD",
+        ].join("\r\n");
+      }
+      function urlHasScheme(url) {
+        return url.startsWith("data:") || url.startsWith("http");
+      }
+      function urlWithScheme(url, scheme = "https://") {
+        return urlHasScheme(url) ? url : scheme + url;
+      }
+      function urlWithoutScheme(url) {
+        return url.replace(/^https?:\/\//, "");
+      }
+      let showing = false;
+      function showCard(model) {
+        if (showing) return;
+        showing = true;
+        for (const name in model) {
+          if (!model.hasOwnProperty(name)) {
+            continue;
+          }
+          const value = model[name];
+          const element = document.getElementById(`v-${name}`);
           if (!value || !element) {
             continue;
           }
           element.classList.remove("hide");
-          switch (key) {
+          switch (name) {
+            default:
             case "URL":
-              element.href = value.startsWith("http")
-                ? value
-                : "https://" + value;
-              element.innerHTML += value.replace(/^https?:\/\/?/, "");
+              element.href = urlWithScheme(value);
+              element.innerHTML += urlWithoutScheme(value);
               break;
             case "TEL":
               element.href = "tel:" + value.replace(/[() -]+/g, "-");
@@ -184,21 +244,20 @@
               element.innerText = value;
               break;
             case "PHOTO":
-              element.src =
-                value.startsWith("data:") || value.startsWith("http")
-                  ? value
-                  : "data:image/jpeg;base64," + value;
-              // FIXME: downscale to THUMB_SIZE; skip for now
-              continue;
-            default:
+              // FIXME: detect image type
+              element.src = urlHasScheme(value)
+                ? value
+                : "data:image/jpeg;base64," + value;
+              break;
+            case "FN":
+            case "ORG":
+            case "TITLE":
               element.innerText = value;
           }
-          miniCard += `${field._raw}\n`;
         }
-        // FIXME: add UID, if it's not already there
-        return `${miniCard}REV:${timestamp()}\nEND:VCARD`;
       }
       function updateMyCard(vcard) {
+        const card = parseCard(vcard);
         localStorage.setItem("vcard", vcard);
         window.location.hash = "";
         window.location.reload();
@@ -207,6 +266,14 @@
         const file = e.target.files[0];
         file.text().then(updateMyCard);
       }
+      let model;
+      function onPhotoLoad(e) {
+        if (model) {
+          model.PHOTO = createThumbnail(e.target);
+          const card = toVCard(model);
+          window.location.hash = encodeURIComponent(card);
+        }
+      }
       function onLoad() {
         const upload = document.getElementById("upload");
         upload.addEventListener("change", onUploadChange);
@@ -214,36 +281,45 @@
         const autoFlip = document.getElementById("autoFlip");
         autoFlip.addEventListener("change", onAutoFlipChange);
 
+        const photo = document.getElementById("v-PHOTO");
+        photo.addEventListener("load", onPhotoLoad);
+
         window.addEventListener(
           "deviceorientation",
           handleDeviceOrientation,
           true
         );
-        const card = decodeURIComponent(location.hash.slice(1));
+        let card = decodeURIComponent(window.location.hash.slice(1));
         const mycard = localStorage.getItem("vcard");
         if (card) {
-          showCard(card);
+          model = parseCard(card);
+          showCard(model);
+        } else if (mycard) {
+          model = parseCard(mycard);
+          showCard(model);
+          delete model.PHOTO;
+          card = toVCard(model);
+          window.location.hash = encodeURIComponent(card);
         } else {
-          if (mycard) {
-            const mini = showCard(mycard);
-            location.hash = encodeURIComponent(mini);
-            return;
-          }
+          // Nothing to show
+          return;
         }
 
         const vcard = document.getElementById("vcard");
-        // FIXME: use full name for file
-        vcard.setAttribute("download", "vcard.vcf");
+        vcard.classList.remove("hide");
+        vcard.setAttribute("download", "vcard.vcf"); // FIXME: use full name for file
         vcard.setAttribute(
           "href",
           "data:text/vcard;charset=utf-8," + encodeURIComponent(card)
         );
+
         const qrcode = document.getElementById("qrcode");
         qrcode.innerHTML = "";
-        const link = location.href;
         const qr = new QRCode(qrcode, {
-          text: link,//qrLink(link),
+          text: window.location.href,
           correctLevel: QRCode.CorrectLevel.L,
+          width: 531,
+          height: 531,
         });
         // FIXME: update REV/timestamp in vcard
         //setInterval(() => qr.makeCode(qrLink(link)), INTERVAL);
@@ -252,20 +328,12 @@
     </script>
   </head>
   <body>
-    <div class="no-print float-right">
-      <label for="upload">⤒</label>
-      <input id="upload" class="hide" type="file" accept=".vcf,text/vcard" />
-    </div>
-    <div class="no-print">
-      <label for="autoFlip">↻</label>
-      <input id="autoFlip" class="hide" type="checkbox" />
-    </div>
-    <div id="card" class="upsidedown">
+    <div id="card">
       <div class="center">
-        <p class="center headshot">
-          <img id="v-PHOTO" alt="headshot" class="headshot" src="bust.png" />
+        <p>
+          <img id="v-PHOTO" alt="Headshot" class="headshot" src="bust.png" />
         </p>
-        <h1 id="v-FN">First Last</h1>
+        <h1 id="v-FN">Scroll Down</h1>
         <h2>
           <span id="v-TITLE" class="hide">Title</span><br />
           <a id="v-URL-work">
@@ -282,7 +350,6 @@
             first.last@example.com
           </a>
         </p>
-        <p class="no-print"><a id="vcard" href="card.vcf">Download vCard</a></p>
         <div id="qrcode">
           <img
             alt="https://noun.ly/qr"
@@ -338,7 +405,21 @@
             </span>
           </a>
         </li>
+        <!-- FIXME: add twitter, facebook, instagram, … -->
       </ul>
+    </div>
+    <div id="ui" class="no-print center">
+      <div>
+        <a class="hide" id="vcard" href="card.vcf">Download vCard</a>
+      </div>
+      <div>
+        <label for="upload">Upload vCard</label>
+        <input id="upload" class="hide" type="file" accept=".vcf,text/vcard" />
+      </div>
+      <div>
+        <label for="autoFlip">Auto-Flip</label>
+        <input id="autoFlip" class="hide" type="checkbox" />
+      </div>
     </div>
   </body>
 </html>
