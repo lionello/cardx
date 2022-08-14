@@ -142,10 +142,17 @@
           const [, name, paramstr, _value] = match;
           // Parse the parameters (if any)
           let pref = 0;
+          let mediatype = "";
           let type = "";
           while ((match = paramsRE.exec(paramstr)) !== null) {
             const [, key, value] = match;
             switch (key) {
+              case "JPEG":
+                mediatype = "image/jpeg";
+                break;
+              case "MEDIATYPE":
+                mediatype = value;
+                break;
               case "type":
               case "TYPE":
                 if (value === "pref") {
@@ -173,10 +180,17 @@
             case "URL":
               model[`URL${type ? "-" + type : type}`] = _value;
               break;
+            case "PHOTO":
+              if (!mediatype) {
+                mediatype = `image/${type.toLowerCase() || "jpeg"}`;
+              }
+              model[name] = urlHasScheme(_value)
+                ? _value
+                : `data:${mediatype};base64,` + _value;
+              break;
             case "EMAIL":
             case "TITLE":
             case "ORG":
-            case "PHOTO":
             case "FN":
             case "TEL":
               model[name] = _value;
@@ -192,7 +206,8 @@
         for (const name in model) {
           if (model.hasOwnProperty(name)) {
             const nameWithType = name.replace("-", ";TYPE=");
-            lines.push(`${nameWithType}:${model[name]}`);
+            const value = model[name];
+            lines.push(`${nameWithType}:${value}`);
           }
         }
         // FIXME: add UID, if it's not already there
@@ -297,6 +312,7 @@
         } else if (mycard) {
           model = parseCard(mycard);
           showCard(model);
+          // The default photo is likely too big for the QR code
           delete model.PHOTO;
           card = toVCard(model);
           window.location.hash = encodeURIComponent(card);
@@ -307,7 +323,7 @@
 
         const vcard = document.getElementById("vcard");
         vcard.classList.remove("hide");
-        vcard.setAttribute("download", "vcard.vcf"); // FIXME: use full name for file
+        vcard.setAttribute("download", `${model.FN || "card"}.vcf`);
         vcard.setAttribute(
           "href",
           "data:text/vcard;charset=utf-8," + encodeURIComponent(card)
