@@ -139,61 +139,65 @@
           /^(?:\w+\.)?(\w+)((?:;(?:[^";:]|".*?")*)*):(.+(\r?\n .+)*)$/gm;
         const paramsRE = /;(\w+)(?:=((?:[^";:]*|".*?")(?:,[^";:]*|,".*?")*))?/g;
         while ((match = vcfRE.exec(vcard)) !== null) {
-          const [, name, paramstr, _value] = match;
+          let [, name, paramstr, value] = match;
+          // Property names are case-insensitive
+          name = name.toUpperCase();
           // Parse the parameters (if any)
           let pref = 0;
           let mediatype = "";
           let type = "";
           while ((match = paramsRE.exec(paramstr)) !== null) {
-            const [, key, value] = match;
-            switch (key) {
+            const [, paramName, paramValue] = match;
+            // Parameter names are case-insensitive
+            switch (paramName.toUpperCase()) {
               case "JPEG":
                 mediatype = "image/jpeg";
                 break;
               case "MEDIATYPE":
-                mediatype = value;
+                mediatype = paramValue;
                 break;
-              case "type":
               case "TYPE":
-                if (value === "pref") {
+                if (paramValue === "pref") {
                   pref = 1;
                 } else {
-                  type = value;
+                  type = paramValue.toLowerCase();
                 }
                 break;
-              case "pref":
               case "PREF":
-                pref = value | 0;
+                pref = paramValue | 0;
                 break;
             }
           }
+          // FIXME: unescape any ^n, ^^, ^' to \n, ^, ", respectively
+          // Only keep the highest preference for each property
           const oldpref = prefs[name] || -1;
           if (oldpref > pref) continue;
           prefs[name] = pref;
           switch (name) {
-            case "N":
-              const nameParts = _value.split(";");
-              // Only overwrite FN if it's not already set
-              // FIXME: check locale to decide correct order
-              model.FN = model.FN || `${nameParts[1]} ${nameParts[0]}`;
-              break;
             case "URL":
-              model[`URL${type ? "-" + type : type}`] = _value;
+              // FIXME: on MacOS, the type comes from X-ABLabel in the same group
+              model[`URL${type ? "-" + type : type}`] = value;
               break;
             case "PHOTO":
               if (!mediatype) {
                 mediatype = `image/${type.toLowerCase() || "jpeg"}`;
               }
-              model[name] = urlHasScheme(_value)
-                ? _value
-                : `data:${mediatype};base64,` + _value;
+              model[name] = urlHasScheme(value)
+                ? value
+                : `data:${mediatype};base64,` + value;
               break;
+            case "N":
+              const nameParts = value.split(";");
+              // Only overwrite FN if it's not already set
+              // FIXME: check browser locale to decide correct order
+              model.FN = model.FN || `${nameParts[1]} ${nameParts[0]}`;
+              // fallthrough
             case "EMAIL":
             case "TITLE":
             case "ORG":
             case "FN":
             case "TEL":
-              model[name] = _value;
+              model[name] = value;
           }
         }
         return model;
@@ -201,12 +205,16 @@
       function timestamp() {
         return new Date().toISOString().replace(/-|:|\.\d+/g, "");
       }
-      function toVCard(model) {
+      function toVCardV3(model) {
         const lines = [];
         for (const name in model) {
           if (model.hasOwnProperty(name)) {
-            const nameWithType = name.replace("-", ";TYPE=");
-            const value = model[name];
+            let nameWithType = name.replace("-", ";TYPE=");
+            let value = model[name];
+            if (name === "PHOTO" && value.startsWith("data:")) {
+              nameWithType += ";ENCODING=b;TYPE=JPEG";
+              value = value.replace(/^data:image\/\w+;base64,/, "");
+            }
             lines.push(`${nameWithType}:${value}`);
           }
         }
@@ -244,8 +252,8 @@
           }
           element.classList.remove("hide");
           switch (name) {
-            default:
             case "URL":
+            default:
               element.href = urlWithScheme(value);
               element.innerHTML += urlWithoutScheme(value);
               break;
@@ -283,9 +291,10 @@
       }
       let model;
       function onPhotoLoad(e) {
-        if (model) {
+        if (model && (!model.PHOTO || !model.PHOTO.startsWith("data:"))) {
+          // FIXME: only update the card if the photo is smaller
           model.PHOTO = createThumbnail(e.target);
-          const card = toVCard(model);
+          const card = toVCardV3(model);
           window.location.hash = encodeURIComponent(card);
         }
       }
@@ -312,9 +321,9 @@
         } else if (mycard) {
           model = parseCard(mycard);
           showCard(model);
-          // The default photo is likely too big for the QR code
+          // The default photo is likely too big for the QR code; delete it
           delete model.PHOTO;
-          card = toVCard(model);
+          card = toVCardV3(model);
           window.location.hash = encodeURIComponent(card);
         } else {
           // Nothing to show
